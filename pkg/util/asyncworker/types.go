@@ -20,9 +20,24 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/kubewharf/katalyst-core/pkg/metrics"
 )
 
-// worStatus tracks worker is working or not
+// WorkNameSeperator is used to assemble standard work-name
+// and we have assumptions below, for work-name 'a/b/c':
+// - 'a' and 'b' are specified identifiers for objects/triggers(etc.) on the action
+// - 'c' is a general identifier for actions
+const WorkNameSeperator = "/"
+
+type contextKey string
+
+const (
+	contextKeyMetricEmitter contextKey = "metric_emitter"
+	contextKeyMetricName    contextKey = "metric_name"
+)
+
+// workStatus tracks worker is working or not
 // and containers context to cancel work
 type workStatus struct {
 	// ctx is the context that is associated with the current pod sync
@@ -38,7 +53,7 @@ type workStatus struct {
 	work *Work
 }
 
-// work contains details to handle by workers
+// Work contains details to handle by workers
 type Work struct {
 	// Fn is the function to handle the work,
 	// its first param must be of type context.Context,
@@ -54,7 +69,8 @@ type Work struct {
 
 type AsyncWorkers struct {
 	// name of AsyncWorkers
-	name string
+	name    string
+	emitter metrics.MetricEmitter
 	// Protects all per work fields
 	workLock sync.Mutex
 	// Tracks the last undelivered work item of corresponding work name - a work item is

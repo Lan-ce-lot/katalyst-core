@@ -373,3 +373,13 @@ func GenerateSocketZoneNode(socketID int) ZoneNode {
 		},
 	}
 }
+
+// GenerateDeviceZoneNode generates device zone node through device id, which must be unique
+func GenerateDeviceZoneNode(deviceId, zoneType string) ZoneNode {
+	return ZoneNode{
+		Meta: ZoneMeta{
+			Type: nodev1alpha1.TopologyType(zoneType),
+			Name: deviceId,
+		},
+	}
+}

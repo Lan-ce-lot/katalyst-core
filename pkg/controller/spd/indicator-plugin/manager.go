@@ -34,11 +34,11 @@ const (
 // IndicatorUpdater is used by IndicatorPlugin as a unified implementation
 // to trigger indicator updating logic.
 type IndicatorUpdater interface {
-	// AddBusinessIndicatorSpec + AddSystemIndicatorSpec + AddBusinessIndicatorStatus
+	// UpdateBusinessIndicatorSpec + UpdateSystemIndicatorSpec + UpdateBusinessIndicatorStatus
 	// for indicator add functions, IndicatorUpdater will try to merge them in local stores.
-	AddBusinessIndicatorSpec(_ types.NamespacedName, _ []apiworkload.ServiceBusinessIndicatorSpec)
-	AddSystemIndicatorSpec(_ types.NamespacedName, _ []apiworkload.ServiceSystemIndicatorSpec)
-	AddBusinessIndicatorStatus(_ types.NamespacedName, _ []apiworkload.ServiceBusinessIndicatorStatus)
+	UpdateBusinessIndicatorSpec(_ types.NamespacedName, _ []apiworkload.ServiceBusinessIndicatorSpec)
+	UpdateSystemIndicatorSpec(_ types.NamespacedName, _ []apiworkload.ServiceSystemIndicatorSpec)
+	UpdateBusinessIndicatorStatus(_ types.NamespacedName, _ []apiworkload.ServiceBusinessIndicatorStatus)
 }
 
 // IndicatorGetter is used by spd controller as indicator notifier to trigger
@@ -78,9 +78,8 @@ func NewIndicatorManager() *IndicatorManager {
 	}
 }
 
-func (u *IndicatorManager) AddBusinessIndicatorSpec(nn types.NamespacedName, indicators []apiworkload.ServiceBusinessIndicatorSpec) {
+func (u *IndicatorManager) UpdateBusinessIndicatorSpec(nn types.NamespacedName, indicators []apiworkload.ServiceBusinessIndicatorSpec) {
 	u.specMtx.Lock()
-	defer u.specMtx.Unlock()
 
 	insert := false
 	if _, ok := u.specMap[nn]; !ok {
@@ -90,15 +89,15 @@ func (u *IndicatorManager) AddBusinessIndicatorSpec(nn types.NamespacedName, ind
 	for _, indicator := range indicators {
 		util.InsertSPDBusinessIndicatorSpec(u.specMap[nn], &indicator)
 	}
+	u.specMtx.Unlock()
 
 	if insert {
 		u.specQueue <- nn
 	}
 }
 
-func (u *IndicatorManager) AddSystemIndicatorSpec(nn types.NamespacedName, indicators []apiworkload.ServiceSystemIndicatorSpec) {
+func (u *IndicatorManager) UpdateSystemIndicatorSpec(nn types.NamespacedName, indicators []apiworkload.ServiceSystemIndicatorSpec) {
 	u.specMtx.Lock()
-	defer u.specMtx.Unlock()
 
 	insert := false
 	if _, ok := u.specMap[nn]; !ok {
@@ -108,15 +107,15 @@ func (u *IndicatorManager) AddSystemIndicatorSpec(nn types.NamespacedName, indic
 	for _, indicator := range indicators {
 		util.InsertSPDSystemIndicatorSpec(u.specMap[nn], &indicator)
 	}
+	u.specMtx.Unlock()
 
 	if insert {
 		u.specQueue <- nn
 	}
 }
 
-func (u *IndicatorManager) AddBusinessIndicatorStatus(nn types.NamespacedName, indicators []apiworkload.ServiceBusinessIndicatorStatus) {
+func (u *IndicatorManager) UpdateBusinessIndicatorStatus(nn types.NamespacedName, indicators []apiworkload.ServiceBusinessIndicatorStatus) {
 	u.statusMtx.Lock()
-	defer u.statusMtx.Unlock()
 
 	insert := false
 	if _, ok := u.statusMap[nn]; !ok {
@@ -126,6 +125,8 @@ func (u *IndicatorManager) AddBusinessIndicatorStatus(nn types.NamespacedName, i
 	for _, indicator := range indicators {
 		util.InsertSPDBusinessIndicatorStatus(u.statusMap[nn], &indicator)
 	}
+
+	u.statusMtx.Unlock()
 
 	if insert {
 		u.statusQueue <- nn

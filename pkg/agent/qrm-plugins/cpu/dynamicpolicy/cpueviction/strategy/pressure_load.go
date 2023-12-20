@@ -43,6 +43,8 @@ import (
 	"github.com/kubewharf/katalyst-core/pkg/util/native"
 )
 
+const EvictionNameLoad = "cpu-pressure-load-plugin"
+
 const evictionConditionCPUPressure = "CPUPressure"
 
 const (
@@ -69,13 +71,6 @@ var (
 	handleMetrics = sets.NewString(
 		consts.MetricLoad1MinContainer,
 	)
-
-	skipPools = sets.NewString(
-		state.PoolNameReclaim,
-		state.PoolNameDedicated,
-		state.PoolNameFallback,
-		state.PoolNameReserve,
-	)
 )
 
 type CPUPressureLoadEviction struct {
@@ -85,6 +80,7 @@ type CPUPressureLoadEviction struct {
 	metaServer  *metaserver.MetaServer
 	qosConf     *generic.QoSConfiguration
 	dynamicConf *dynamic.DynamicAgentConfiguration
+	skipPools   sets.String
 
 	metricsHistory map[string]Entries
 
@@ -98,7 +94,7 @@ type CPUPressureLoadEviction struct {
 }
 
 func NewCPUPressureLoadEviction(emitter metrics.MetricEmitter, metaServer *metaserver.MetaServer,
-	conf *config.Configuration, state state.ReadonlyState) (CPUPressureThresholdEviction, error) {
+	conf *config.Configuration, state state.ReadonlyState) (CPUPressureEviction, error) {
 	plugin := &CPUPressureLoadEviction{
 		state:          state,
 		emitter:        emitter,
@@ -106,6 +102,7 @@ func NewCPUPressureLoadEviction(emitter metrics.MetricEmitter, metaServer *metas
 		metricsHistory: make(map[string]Entries),
 		qosConf:        conf.QoSConfiguration,
 		dynamicConf:    conf.DynamicAgentConfiguration,
+		skipPools:      sets.NewString(conf.LoadPressureEvictionSkipPools...),
 		syncPeriod:     conf.LoadEvictionSyncPeriod,
 	}
 
@@ -129,7 +126,10 @@ func (p *CPUPressureLoadEviction) Start(ctx context.Context) (err error) {
 	return
 }
 
-func (p *CPUPressureLoadEviction) Name() string { return "pressure-load" }
+func (p *CPUPressureLoadEviction) Name() string { return EvictionNameLoad }
+func (p *CPUPressureLoadEviction) GetEvictPods(_ context.Context, _ *pluginapi.GetEvictPodsRequest) (*pluginapi.GetEvictPodsResponse, error) {
+	return &pluginapi.GetEvictPodsResponse{}, nil
+}
 
 func (p *CPUPressureLoadEviction) ThresholdMet(_ context.Context,
 	_ *pluginapi.Empty) (*pluginapi.ThresholdMetResponse, error) {
@@ -151,7 +151,7 @@ func (p *CPUPressureLoadEviction) ThresholdMet(_ context.Context,
 
 	var softThresholdMetPoolName string
 	for poolName, entries := range p.metricsHistory[consts.MetricLoad1MinContainer] {
-		if !entries.IsPoolEntry() || skipPools.Has(poolName) || state.IsIsolationPool(poolName) {
+		if !entries.IsPoolEntry() || p.skipPools.Has(poolName) || state.IsIsolationPool(poolName) {
 			continue
 		}
 
@@ -333,7 +333,7 @@ func (p *CPUPressureLoadEviction) collectMetrics(_ context.Context) {
 		for containerName, containerEntry := range entry {
 			if containerEntry == nil || containerEntry.IsPool {
 				continue
-			} else if containerEntry.OwnerPool == advisorapi.EmptyOwnerPoolName || skipPools.Has(containerEntry.OwnerPool) {
+			} else if containerEntry.OwnerPool == advisorapi.EmptyOwnerPoolName || p.skipPools.Has(containerEntry.OwnerPool) {
 				general.Infof("skip collecting metric for pod: %s, container: %s with owner pool name: %s",
 					podUID, containerName, containerEntry.OwnerPool)
 				continue
@@ -372,7 +372,7 @@ func (p *CPUPressureLoadEviction) collectMetrics(_ context.Context) {
 		}
 
 		for _, poolEntry := range entry {
-			if poolEntry == nil || !poolEntry.IsPool || skipPools.Has(poolName) {
+			if poolEntry == nil || !poolEntry.IsPool || p.skipPools.Has(poolName) {
 				continue
 			}
 
@@ -401,7 +401,7 @@ func (p *CPUPressureLoadEviction) checkSharedPressureByPoolSize(pod2Pool PodPool
 		}
 
 		for _, containerEntry := range entry {
-			if !containerEntry.IsPool || skipPools.Has(poolName) || entry[advisorapi.FakedContainerName] == nil {
+			if !containerEntry.IsPool || p.skipPools.Has(poolName) || entry[advisorapi.FakedContainerName] == nil {
 				continue
 			}
 			poolSizeSum += containerEntry.PoolSize

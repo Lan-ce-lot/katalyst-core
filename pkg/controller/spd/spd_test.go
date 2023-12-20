@@ -29,10 +29,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/utils/pointer"
 
 	apis "github.com/kubewharf/katalyst-api/pkg/apis/autoscaling/v1alpha1"
 	apiworkload "github.com/kubewharf/katalyst-api/pkg/apis/workload/v1alpha1"
 	"github.com/kubewharf/katalyst-api/pkg/consts"
+	apiconsts "github.com/kubewharf/katalyst-api/pkg/consts"
 	katalystbase "github.com/kubewharf/katalyst-core/cmd/base"
 	"github.com/kubewharf/katalyst-core/pkg/config/controller"
 	"github.com/kubewharf/katalyst-core/pkg/config/generic"
@@ -87,11 +89,9 @@ func TestSPDController_Run(t *testing.T) {
 						APIVersion: "apps/v1",
 					},
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "sts1",
-						Namespace: "default",
-						Annotations: map[string]string{
-							consts.WorkloadAnnotationSPDNameKey: "spd1",
-						},
+						Name:        "sts1",
+						Namespace:   "default",
+						Annotations: map[string]string{},
 					},
 					Spec: appsv1.StatefulSetSpec{
 						Selector: &metav1.LabelSelector{
@@ -104,7 +104,7 @@ func TestSPDController_Run(t *testing.T) {
 				spd: &apiworkload.ServiceProfileDescriptor{
 					ObjectMeta: metav1.ObjectMeta{
 						Namespace: "default",
-						Name:      "spd1",
+						Name:      "sts1",
 					},
 					Spec: apiworkload.ServiceProfileDescriptorSpec{
 						TargetRef: apis.CrossVersionObjectReference{
@@ -122,9 +122,8 @@ func TestSPDController_Run(t *testing.T) {
 					APIVersion: "apps/v1",
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:        "sts1",
-					Namespace:   "default",
-					Annotations: map[string]string{},
+					Name:      "sts1",
+					Namespace: "default",
 				},
 				Spec: appsv1.StatefulSetSpec{
 					Selector: &metav1.LabelSelector{
@@ -171,7 +170,6 @@ func TestSPDController_Run(t *testing.T) {
 					Namespace: "default",
 					Annotations: map[string]string{
 						consts.WorkloadAnnotationSPDEnableKey: consts.WorkloadAnnotationSPDEnabled,
-						consts.WorkloadAnnotationSPDNameKey:   "sts1",
 					},
 				},
 				Spec: appsv1.StatefulSetSpec{
@@ -200,6 +198,169 @@ func TestSPDController_Run(t *testing.T) {
 						Name:       "sts1",
 						APIVersion: stsGVK.GroupVersion().String(),
 					},
+					BaselinePercent: pointer.Int32(100),
+				},
+				Status: apiworkload.ServiceProfileDescriptorStatus{
+					AggMetrics: []apiworkload.AggPodMetrics{},
+				}},
+		},
+		{
+			name: "auto create spd(dedicated_cores)",
+			fields: fields{
+				workload: &appsv1.StatefulSet{
+					TypeMeta: metav1.TypeMeta{
+						Kind:       "StatefulSet",
+						APIVersion: "apps/v1",
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "sts1",
+						Namespace: "default",
+						Annotations: map[string]string{
+							consts.WorkloadAnnotationSPDEnableKey: consts.WorkloadAnnotationSPDEnabled,
+						},
+					},
+					Spec: appsv1.StatefulSetSpec{
+						Selector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"workload": "sts1",
+							},
+						},
+						Template: v1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Annotations: map[string]string{"katalyst.kubewharf.io/qos_level": "dedicated_cores"},
+							},
+							Spec: v1.PodSpec{},
+						},
+					},
+				},
+				spd: nil,
+			},
+			wantWorkload: &appsv1.StatefulSet{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "StatefulSet",
+					APIVersion: "apps/v1",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sts1",
+					Namespace: "default",
+					Annotations: map[string]string{
+						consts.WorkloadAnnotationSPDEnableKey: consts.WorkloadAnnotationSPDEnabled,
+					},
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"workload": "sts1",
+						},
+					},
+					Template: v1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{"katalyst.kubewharf.io/qos_level": "dedicated_cores"},
+						},
+						Spec: v1.PodSpec{},
+					},
+				},
+			},
+			wantSPD: &apiworkload.ServiceProfileDescriptor{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "default",
+					Name:      "sts1",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "StatefulSet",
+							Name:       "sts1",
+						},
+					},
+				},
+				Spec: apiworkload.ServiceProfileDescriptorSpec{
+					TargetRef: apis.CrossVersionObjectReference{
+						Kind:       stsGVK.Kind,
+						Name:       "sts1",
+						APIVersion: stsGVK.GroupVersion().String(),
+					},
+					BaselinePercent: pointer.Int32(100),
+				},
+				Status: apiworkload.ServiceProfileDescriptorStatus{
+					AggMetrics: []apiworkload.AggPodMetrics{},
+				}},
+		},
+		{
+			name: "auto create spd(shared_cores)",
+			fields: fields{
+				workload: &appsv1.StatefulSet{
+					TypeMeta: metav1.TypeMeta{
+						Kind:       "StatefulSet",
+						APIVersion: "apps/v1",
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "sts1",
+						Namespace: "default",
+						Annotations: map[string]string{
+							consts.WorkloadAnnotationSPDEnableKey: consts.WorkloadAnnotationSPDEnabled,
+						},
+					},
+					Spec: appsv1.StatefulSetSpec{
+						Selector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"workload": "sts1",
+							},
+						},
+						Template: v1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Annotations: map[string]string{"katalyst.kubewharf.io/qos_level": "shared_cores"},
+							},
+							Spec: v1.PodSpec{},
+						},
+					},
+				},
+				spd: nil,
+			},
+			wantWorkload: &appsv1.StatefulSet{
+				TypeMeta: metav1.TypeMeta{
+					Kind:       "StatefulSet",
+					APIVersion: "apps/v1",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sts1",
+					Namespace: "default",
+					Annotations: map[string]string{
+						consts.WorkloadAnnotationSPDEnableKey: consts.WorkloadAnnotationSPDEnabled,
+					},
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"workload": "sts1",
+						},
+					},
+					Template: v1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{"katalyst.kubewharf.io/qos_level": "shared_cores"},
+						},
+						Spec: v1.PodSpec{},
+					},
+				},
+			},
+			wantSPD: &apiworkload.ServiceProfileDescriptor{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "default",
+					Name:      "sts1",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "StatefulSet",
+							Name:       "sts1",
+						},
+					},
+				},
+				Spec: apiworkload.ServiceProfileDescriptorSpec{
+					TargetRef: apis.CrossVersionObjectReference{
+						Kind:       stsGVK.Kind,
+						Name:       "sts1",
+						APIVersion: stsGVK.GroupVersion().String(),
+					},
+					BaselinePercent: pointer.Int32(0),
 				},
 				Status: apiworkload.ServiceProfileDescriptorStatus{
 					AggMetrics: []apiworkload.AggPodMetrics{},
@@ -211,6 +372,10 @@ func TestSPDController_Run(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			spdConfig := &controller.SPDConfig{
 				SPDWorkloadGVResources: []string{"statefulsets.v1.apps"},
+				BaselinePercent: map[string]int64{
+					apiconsts.PodAnnotationQoSLevelSharedCores:    0,
+					apiconsts.PodAnnotationQoSLevelDedicatedCores: 100,
+				},
 			}
 			genericConfig := &generic.GenericConfiguration{}
 			controllerConf := &controller.GenericControllerConfiguration{
@@ -222,7 +387,7 @@ func TestSPDController_Run(t *testing.T) {
 				[]runtime.Object{tt.fields.spd}, []runtime.Object{tt.fields.workload})
 			assert.NoError(t, err)
 
-			spdController, err := NewSPDController(ctx, controlCtx, genericConfig, controllerConf, spdConfig, struct{}{})
+			spdController, err := NewSPDController(ctx, controlCtx, genericConfig, controllerConf, spdConfig, generic.NewQoSConfiguration(), struct{}{})
 			assert.NoError(t, err)
 
 			controlCtx.StartInformer(ctx)
@@ -261,10 +426,10 @@ func TestPodIndexerDuplicate(t *testing.T) {
 
 	spdConf.SPDPodLabelIndexerKeys = []string{"test-1"}
 
-	_, err = NewSPDController(context.TODO(), controlCtx, genericConfig, controllerConf, spdConf, struct{}{})
+	_, err = NewSPDController(context.TODO(), controlCtx, genericConfig, controllerConf, spdConf, nil, struct{}{})
 	assert.NoError(t, err)
 
-	_, err = NewSPDController(context.TODO(), controlCtx, genericConfig, controllerConf, spdConf, struct{}{})
+	_, err = NewSPDController(context.TODO(), controlCtx, genericConfig, controllerConf, spdConf, nil, struct{}{})
 	assert.NoError(t, err)
 
 	indexers := controlCtx.KubeInformerFactory.Core().V1().Pods().Informer().GetIndexer().GetIndexers()
@@ -289,7 +454,6 @@ func TestIndicatorUpdater(t *testing.T) {
 			Namespace: "default",
 			Annotations: map[string]string{
 				consts.WorkloadAnnotationSPDEnableKey: consts.WorkloadAnnotationSPDEnabled,
-				consts.WorkloadAnnotationSPDNameKey:   "sts1",
 			},
 		},
 		Spec: appsv1.StatefulSetSpec{
@@ -370,6 +534,7 @@ func TestIndicatorUpdater(t *testing.T) {
 				Name:       "sts1",
 				APIVersion: stsGVK.GroupVersion().String(),
 			},
+			BaselinePercent: pointer.Int32(20),
 			BusinessIndicator: []apiworkload.ServiceBusinessIndicatorSpec{
 				{
 					Name: "business-1",
@@ -498,7 +663,7 @@ func TestIndicatorUpdater(t *testing.T) {
 		[]runtime.Object{spd}, []runtime.Object{workload})
 	assert.NoError(t, err)
 
-	sc, err := NewSPDController(ctx, controlCtx, genericConfig, controllerConf, spdConfig, struct{}{})
+	sc, err := NewSPDController(ctx, controlCtx, genericConfig, controllerConf, spdConfig, nil, struct{}{})
 	assert.NoError(t, err)
 
 	controlCtx.StartInformer(ctx)
@@ -506,7 +671,7 @@ func TestIndicatorUpdater(t *testing.T) {
 	synced := cache.WaitForCacheSync(ctx.Done(), sc.syncedFunc...)
 	assert.True(t, synced)
 
-	sc.indicatorManager.AddBusinessIndicatorSpec(nn, []apiworkload.ServiceBusinessIndicatorSpec{
+	sc.indicatorManager.UpdateBusinessIndicatorSpec(nn, []apiworkload.ServiceBusinessIndicatorSpec{
 		{
 			Name: "business-1",
 			Indicators: []apiworkload.Indicator{
@@ -526,7 +691,7 @@ func TestIndicatorUpdater(t *testing.T) {
 			},
 		},
 	})
-	sc.indicatorManager.AddBusinessIndicatorSpec(nn, []apiworkload.ServiceBusinessIndicatorSpec{
+	sc.indicatorManager.UpdateBusinessIndicatorSpec(nn, []apiworkload.ServiceBusinessIndicatorSpec{
 		{
 			Name: "business-3",
 			Indicators: []apiworkload.Indicator{
@@ -547,7 +712,7 @@ func TestIndicatorUpdater(t *testing.T) {
 		},
 	})
 
-	sc.indicatorManager.AddSystemIndicatorSpec(nn, []apiworkload.ServiceSystemIndicatorSpec{
+	sc.indicatorManager.UpdateSystemIndicatorSpec(nn, []apiworkload.ServiceSystemIndicatorSpec{
 		{
 			Name: "system-1",
 			Indicators: []apiworkload.Indicator{
@@ -562,7 +727,7 @@ func TestIndicatorUpdater(t *testing.T) {
 			},
 		},
 	})
-	sc.indicatorManager.AddSystemIndicatorSpec(nn, []apiworkload.ServiceSystemIndicatorSpec{
+	sc.indicatorManager.UpdateSystemIndicatorSpec(nn, []apiworkload.ServiceSystemIndicatorSpec{
 		{
 			Name: "system-2",
 			Indicators: []apiworkload.Indicator{
@@ -574,7 +739,7 @@ func TestIndicatorUpdater(t *testing.T) {
 		},
 	})
 
-	sc.indicatorManager.AddBusinessIndicatorStatus(nn, []apiworkload.ServiceBusinessIndicatorStatus{
+	sc.indicatorManager.UpdateBusinessIndicatorStatus(nn, []apiworkload.ServiceBusinessIndicatorStatus{
 		{
 			Name:    "system-1",
 			Current: &value,

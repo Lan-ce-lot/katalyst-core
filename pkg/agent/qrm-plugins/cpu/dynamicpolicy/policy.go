@@ -290,7 +290,9 @@ func (p *DynamicPolicy) Start() (err error) {
 		go p.cpuPressureEviction.Run(ctx)
 	}
 
-	periodicalhandler.ReadyToStartHandlersByGroup(qrm.QRMCPUPluginPeriodicalHandlerGroupName)
+	go wait.Until(func() {
+		periodicalhandler.ReadyToStartHandlersByGroup(qrm.QRMCPUPluginPeriodicalHandlerGroupName)
+	}, 5*time.Second, p.stopCh)
 
 	// pre-check necessary dirs if sys-advisor is enabled
 	if !p.enableCPUAdvisor {
@@ -1037,7 +1039,7 @@ func (p *DynamicPolicy) getContainerRequestedCores(allocationInfo *state.Allocat
 			return 0
 		}
 
-		cpuQuantity := native.GetCPUQuantity(container.Resources.Requests)
+		cpuQuantity := native.CPUQuantityGetter()(container.Resources.Requests)
 		allocationInfo.RequestQuantity = general.Max(int(cpuQuantity.Value()), 0)
 		general.Infof("get cpu request quantity: %d for pod: %s/%s container: %s from podWatcher",
 			allocationInfo.RequestQuantity, allocationInfo.PodNamespace, allocationInfo.PodName, allocationInfo.ContainerName)

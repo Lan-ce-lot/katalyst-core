@@ -19,6 +19,7 @@ package headroompolicy
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/errors"
@@ -79,6 +80,7 @@ func (p *PolicyNUMAAware) Update() (err error) {
 		reclaimableMemory float64
 		data              metric.MetricData
 	)
+	dynamicConfig := p.conf.GetDynamicConfiguration()
 
 	availNUMAs := p.metaServer.CPUDetails.NUMANodes()
 
@@ -112,24 +114,49 @@ func (p *PolicyNUMAAware) Update() (err error) {
 		return err
 	}
 
+	availNUMATotal := float64(0)
 	for _, numaID := range availNUMAs.ToSliceInt() {
 		data, err = p.metaServer.GetNumaMetric(numaID, consts.MetricMemFreeNuma)
 		if err != nil {
 			return err
 		}
 		reclaimableMemory += data.Value
-		general.InfoS("numa memory free", "numaID", numaID, "numaFree", general.FormatMemoryQuantity(data.Value))
+		general.InfoS("reclaimable numa memory free", "numaID", numaID, "numaFree", general.FormatMemoryQuantity(data.Value))
+
+		data, err = p.metaServer.GetNumaMetric(numaID, consts.MetricMemInactiveFileNuma)
+		if err != nil {
+			return err
+		}
+		reclaimableMemory += data.Value * dynamicConfig.CacheBasedRatio
+		general.InfoS("reclaimable numa inactive file", "numaID", numaID, "numaInactiveFile", general.FormatMemoryQuantity(data.Value))
+
+		data, err = p.metaServer.GetNumaMetric(numaID, consts.MetricMemTotalNuma)
+		if err != nil {
+			return err
+		}
+		availNUMATotal += data.Value
+		general.InfoS("reclaimable numa memory total", "numaID", numaID, "numaTotal", general.FormatMemoryQuantity(data.Value))
+
 	}
 
 	for _, container := range reclaimedCoresContainers {
 		reclaimableMemory += container.MemoryRequest
 	}
 
+	watermarkScaleFactor, err := p.metaServer.GetNodeMetric(consts.MetricMemScaleFactorSystem)
+	if err != nil {
+		general.InfoS("Can not get system watermark scale factor")
+		return err
+	}
+	// reserve memory for watermark_scale_factor to make kswapd less happened
+	systemWatermarkReserved := availNUMATotal * watermarkScaleFactor.Value / 10000
+
 	general.InfoS("total memory reclaimable",
 		"reclaimableMemory", general.FormatMemoryQuantity(reclaimableMemory),
 		"ReservedForAllocate", general.FormatMemoryQuantity(p.essentials.ReservedForAllocate),
+		"ReservedForWatermark", general.FormatMemoryQuantity(systemWatermarkReserved),
 		"ResourceUpperBound", general.FormatMemoryQuantity(p.essentials.ResourceUpperBound))
-	p.memoryHeadroom = general.Clamp(reclaimableMemory-p.essentials.ReservedForAllocate, 0, p.essentials.ResourceUpperBound)
+	p.memoryHeadroom = math.Max(reclaimableMemory-p.essentials.ReservedForAllocate-systemWatermarkReserved, 0)
 
 	return nil
 }

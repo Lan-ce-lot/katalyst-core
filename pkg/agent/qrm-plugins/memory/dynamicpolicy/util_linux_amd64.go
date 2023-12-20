@@ -29,6 +29,8 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
 
+	"github.com/kubewharf/katalyst-core/pkg/metrics"
+	"github.com/kubewharf/katalyst-core/pkg/util/asyncworker"
 	"github.com/kubewharf/katalyst-core/pkg/util/cgroup/common"
 	cgroupmgr "github.com/kubewharf/katalyst-core/pkg/util/cgroup/manager"
 	"github.com/kubewharf/katalyst-core/pkg/util/machine"
@@ -37,13 +39,11 @@ import (
 func MigratePagesForContainer(ctx context.Context, podUID, containerId string,
 	numasCount int, sourceNUMAs, destNUMAs machine.CPUSet) error {
 	memoryAbsCGPath, err := common.GetContainerAbsCgroupPath(common.CgroupSubsysMemory, podUID, containerId)
-
 	if err != nil {
 		return fmt.Errorf("GetContainerAbsCgroupPath failed with error: %v", err)
 	}
 
 	containerPids, err := cgroupmgr.GetPidsWithAbsolutePath(memoryAbsCGPath)
-
 	if err != nil {
 		return fmt.Errorf("GetPidsWithAbsolutePath: %s failed with error: %v", memoryAbsCGPath, err)
 	}
@@ -62,7 +62,6 @@ func MigratePagesForContainer(ctx context.Context, podUID, containerId string,
 containerLoop:
 	for _, containerPidStr := range containerPids {
 		containerPid, err := strconv.Atoi(containerPidStr)
-
 		if err != nil {
 			errList = append(errList, fmt.Errorf("pod: %s, container: %s, pid: %s invalid ",
 				podUID, containerId, containerPidStr))
@@ -73,7 +72,6 @@ containerLoop:
 			uintptr(numasCount+1),
 			uintptr(reflect.ValueOf(sourceMask).UnsafePointer()),
 			uintptr(reflect.ValueOf(destMask).UnsafePointer()), 0, 0)
-
 		if errNo != 0 {
 			errList = append(errList, fmt.Errorf("pod: %s, container: %s, pid: %d, migrates pages from %s to %s failed with error: %v",
 				podUID, containerId, containerPid, sourceNUMAs.String(), destNUMAs.String(), errNo.Error()))
@@ -86,5 +84,12 @@ containerLoop:
 		}
 	}
 
-	return utilerrors.NewAggregate(errList)
+	err = utilerrors.NewAggregate(errList)
+	_ = asyncworker.EmitAsyncedMetrics(ctx, metrics.ConvertMapToTags(map[string]string{
+		"podUID":      podUID,
+		"containerID": containerId,
+		"succeeded":   fmt.Sprintf("%v", err == nil),
+	})...)
+
+	return err
 }

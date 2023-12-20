@@ -743,6 +743,255 @@ func Test_getZoneResourcesByAllocatableResources(t *testing.T) {
 	}
 }
 
+func Test_podResourcesServerTopologyAdapterImpl_GetTopologyZones_ReportRDMATopology(t *testing.T) {
+	t.Parallel()
+
+	type fields struct {
+		podList               []*v1.Pod
+		listPodResources      *podresv1.ListPodResourcesResponse
+		allocatableResources  *podresv1.AllocatableResourcesResponse
+		numaSocketZoneNodeMap map[util.ZoneNode]util.ZoneNode
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		want    []*nodev1alpha1.TopologyZone
+		wantErr bool
+	}{
+		{
+			name: "test normal",
+			fields: fields{
+				podList: []*v1.Pod{
+					generateTestPod("default", "pod-1", "pod-1-uid", true),
+					generateTestPod("default", "pod-2", "pod-2-uid", true),
+					generateTestPod("default", "pod-3", "pod-3-uid", false),
+				},
+				listPodResources: &podresv1.ListPodResourcesResponse{
+					PodResources: []*podresv1.PodResources{
+						{
+							Namespace: "default",
+							Name:      "pod-2",
+							Containers: []*podresv1.ContainerResources{
+								{
+									Name: "container-2",
+									Devices: []*podresv1.ContainerDevices{
+										{
+											ResourceName: "resource.katalyst.kubewharf.io/rdma",
+											DeviceIds: []string{
+												"eth0",
+											},
+											Topology: &podresv1.TopologyInfo{
+												Nodes: []*podresv1.NUMANode{
+													{
+														ID: 0,
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				allocatableResources: &podresv1.AllocatableResourcesResponse{
+					Devices: []*podresv1.ContainerDevices{
+						{
+							ResourceName: "resource.katalyst.kubewharf.io/rdma",
+							DeviceIds: []string{
+								"eth0",
+							},
+							Topology: &podresv1.TopologyInfo{
+								Nodes: []*podresv1.NUMANode{
+									{ID: 0},
+								},
+							},
+						},
+						{
+							ResourceName: "resource.katalyst.kubewharf.io/rdma",
+							DeviceIds: []string{
+								"eth1",
+							},
+							Topology: &podresv1.TopologyInfo{
+								Nodes: []*podresv1.NUMANode{
+									{ID: 1},
+								},
+							},
+						},
+					},
+					Resources: []*podresv1.AllocatableTopologyAwareResource{
+						{
+							ResourceName: "cpu",
+							TopologyAwareCapacityQuantityList: []*podresv1.TopologyAwareQuantity{
+								{
+									ResourceValue: 24,
+									Node:          0,
+								},
+								{
+									ResourceValue: 24,
+									Node:          1,
+								},
+							},
+							TopologyAwareAllocatableQuantityList: []*podresv1.TopologyAwareQuantity{
+								{
+									ResourceValue: 24,
+									Node:          0,
+								},
+								{
+									ResourceValue: 24,
+									Node:          1,
+								},
+							},
+						},
+						{
+							ResourceName: "memory",
+							TopologyAwareCapacityQuantityList: []*podresv1.TopologyAwareQuantity{
+								{
+									ResourceValue: generateFloat64ResourceValue("32G"),
+									Node:          0,
+								},
+								{
+									ResourceValue: generateFloat64ResourceValue("32G"),
+									Node:          1,
+								},
+							},
+							TopologyAwareAllocatableQuantityList: []*podresv1.TopologyAwareQuantity{
+								{
+									ResourceValue: generateFloat64ResourceValue("32G"),
+									Node:          0,
+								},
+								{
+									ResourceValue: generateFloat64ResourceValue("32G"),
+									Node:          1,
+								},
+							},
+						},
+					},
+				},
+				numaSocketZoneNodeMap: map[util.ZoneNode]util.ZoneNode{
+					util.GenerateNumaZoneNode(0): util.GenerateSocketZoneNode(0),
+					util.GenerateNumaZoneNode(1): util.GenerateSocketZoneNode(1),
+				},
+			},
+			want: []*nodev1alpha1.TopologyZone{
+				{
+					Type: nodev1alpha1.TopologyTypeSocket,
+					Name: "0",
+					Children: []*nodev1alpha1.TopologyZone{
+						{
+							Type: nodev1alpha1.TopologyTypeNuma,
+							Name: "0",
+							Resources: nodev1alpha1.Resources{
+								Capacity: &v1.ResourceList{
+									"cpu":                                 resource.MustParse("24"),
+									"memory":                              resource.MustParse("32G"),
+									"resource.katalyst.kubewharf.io/rdma": resource.MustParse("1"),
+								},
+								Allocatable: &v1.ResourceList{
+									"cpu":                                 resource.MustParse("24"),
+									"memory":                              resource.MustParse("32G"),
+									"resource.katalyst.kubewharf.io/rdma": resource.MustParse("1"),
+								},
+							},
+							Allocations: []*nodev1alpha1.Allocation{
+								{
+									Consumer: "default/pod-2/pod-2-uid",
+									Requests: &v1.ResourceList{
+										"resource.katalyst.kubewharf.io/rdma": resource.MustParse("1"),
+									},
+								},
+							},
+							Children: []*nodev1alpha1.TopologyZone{
+								{
+									Type: nodev1alpha1.TopologyTypeNIC,
+									Name: "eth0",
+									Resources: nodev1alpha1.Resources{
+										Capacity: &v1.ResourceList{
+											"resource.katalyst.kubewharf.io/rdma": resource.MustParse("1"),
+										},
+										Allocatable: &v1.ResourceList{
+											"resource.katalyst.kubewharf.io/rdma": resource.MustParse("1"),
+										},
+									},
+									Allocations: []*nodev1alpha1.Allocation{
+										{
+											Consumer: "default/pod-2/pod-2-uid",
+											Requests: &v1.ResourceList{
+												"resource.katalyst.kubewharf.io/rdma": resource.MustParse("1"),
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				{
+					Type: nodev1alpha1.TopologyTypeSocket,
+					Name: "1",
+					Children: []*nodev1alpha1.TopologyZone{
+						{
+							Type: nodev1alpha1.TopologyTypeNuma,
+							Name: "1",
+							Resources: nodev1alpha1.Resources{
+								Capacity: &v1.ResourceList{
+									"cpu":                                 resource.MustParse("24"),
+									"memory":                              resource.MustParse("32G"),
+									"resource.katalyst.kubewharf.io/rdma": resource.MustParse("1"),
+								},
+								Allocatable: &v1.ResourceList{
+									"cpu":                                 resource.MustParse("24"),
+									"memory":                              resource.MustParse("32G"),
+									"resource.katalyst.kubewharf.io/rdma": resource.MustParse("1"),
+								},
+							},
+							Children: []*nodev1alpha1.TopologyZone{
+								{
+									Type: nodev1alpha1.TopologyTypeNIC,
+									Name: "eth1",
+									Resources: nodev1alpha1.Resources{
+										Capacity: &v1.ResourceList{
+											"resource.katalyst.kubewharf.io/rdma": resource.MustParse("1"),
+										},
+										Allocatable: &v1.ResourceList{
+											"resource.katalyst.kubewharf.io/rdma": resource.MustParse("1"),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := topologyAdapterImpl{
+				client: &fakePodResourcesListerClient{
+					ListPodResourcesResponse:     tt.fields.listPodResources,
+					AllocatableResourcesResponse: tt.fields.allocatableResources,
+				},
+				metaServer: &metaserver.MetaServer{
+					MetaAgent: &agent.MetaAgent{
+						PodFetcher: &pod.PodFetcherStub{PodList: tt.fields.podList},
+					},
+				},
+				numaSocketZoneNodeMap: tt.fields.numaSocketZoneNodeMap,
+				resourceNameToZoneTypeMap: map[string]string{
+					"resource.katalyst.kubewharf.io/rdma": "NIC",
+				},
+			}
+			got, err := p.GetTopologyZones(context.TODO())
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetTopologyZones() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			assert.Equal(t, true, apiequality.Semantic.DeepEqual(tt.want, got))
+		})
+	}
+}
+
 func Test_podResourcesServerTopologyAdapterImpl_GetTopologyZones(t *testing.T) {
 	t.Parallel()
 
@@ -1612,7 +1861,7 @@ func Test_podResourcesServerTopologyAdapterImpl_Run(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.TODO())
 	notifier := make(chan struct{}, 1)
 	p, _ := NewPodResourcesServerTopologyAdapter(testMetaServer,
-		endpoints, kubeletResourcePluginPath,
+		endpoints, kubeletResourcePluginPath, nil,
 		nil, getNumaInfo, nil, podresources.GetV1Client)
 	err = p.Run(ctx, func() {})
 	assert.NoError(t, err)

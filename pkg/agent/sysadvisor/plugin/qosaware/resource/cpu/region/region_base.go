@@ -274,8 +274,8 @@ func (r *QoSRegionBase) GetProvision() (types.ControlKnob, error) {
 		r.provisionPolicyNameInUse = internal.name
 
 		if r.provisionPolicyNameInUse != oldProvisionPolicyNameInUse {
-			klog.Infof("[qosaware-cpu] region: %s provision policy switch from %s to %s",
-				r.Name, oldProvisionPolicyNameInUse, r.provisionPolicyNameInUse)
+			klog.Infof("[qosaware-cpu] region: %v provision policy switch from %v to %v",
+				r.Name(), oldProvisionPolicyNameInUse, r.provisionPolicyNameInUse)
 			if r.enableBorweinModel {
 				r.borweinController.ResetIndicatorOffsets()
 			}
@@ -304,7 +304,7 @@ func (r *QoSRegionBase) GetHeadroom() (float64, error) {
 			klog.Errorf("[qosaware-cpu] get headroom by policy %v failed: %v", internal.name, err)
 			continue
 		}
-		r.emitter.StoreFloat64(metricRegionHeadroom, headroom, metrics.MetricTypeNameRaw,
+		_ = r.emitter.StoreFloat64(metricRegionHeadroom, headroom, metrics.MetricTypeNameRaw,
 			metrics.ConvertMapToTags(map[string]string{metricTagKeyRegionType: string(r.regionType), metricTagKeyRegionName: r.name})...)
 		r.headroomPolicyNameInUse = internal.name
 		return headroom, nil
@@ -419,6 +419,8 @@ func (r *QoSRegionBase) initProvisionPolicy(conf *config.Configuration, extraCon
 				policy:              policy,
 				internalPolicyState: internalPolicyState{updateStatus: types.PolicyUpdateFailed},
 			})
+		} else {
+			general.ErrorS(fmt.Errorf("failed to find region policy"), "policyName", policyName, "region", r.regionType)
 		}
 	}
 }
@@ -428,7 +430,7 @@ func (r *QoSRegionBase) initHeadroomPolicy(conf *config.Configuration, extraConf
 	metaReader metacache.MetaReader, metaServer *metaserver.MetaServer, emitter metrics.MetricEmitter) {
 	configuredHeadroomPolicy, ok := conf.CPUAdvisorConfiguration.HeadroomPolicies[r.regionType]
 	if !ok {
-		klog.Warningf("[qosaware-cpu] failed to find provision policies for region %v", r.regionType)
+		klog.Warningf("[qosaware-cpu] failed to find headroom policies for region %v", r.regionType)
 		return
 	}
 
@@ -443,7 +445,7 @@ func (r *QoSRegionBase) initHeadroomPolicy(conf *config.Configuration, extraConf
 				internalPolicyState: internalPolicyState{updateStatus: types.PolicyUpdateFailed},
 			})
 		} else {
-			general.InfoS("failed to find headroom policy", "policyName", policyName, "region", r.regionType)
+			general.ErrorS(fmt.Errorf("failed to find headroom policy"), "policyName", policyName, "region", r.regionType)
 		}
 	}
 }
@@ -542,11 +544,22 @@ func (r *QoSRegionBase) getPodIndicatorTarget(ctx context.Context, podUID string
 	return &indicatorTarget, nil
 }
 
-// updateStatus updates region status based on resource and control essentials
-func (r *QoSRegionBase) updateStatus() {
+// UpdateStatus updates region status based on resource and control essentials
+func (r *QoSRegionBase) UpdateStatus(overrideBoundType *types.BoundType) {
 	// reset entries
 	r.regionStatus.OvershootStatus = make(map[string]types.OvershootType)
-	r.regionStatus.BoundType = types.BoundUnknown
+
+	// todo BoundType logic is kind of mess, need to refine this in the future
+	boundType := types.BoundUnknown
+	if overrideBoundType != nil {
+		boundType = *overrideBoundType
+	} else if v, ok := r.ControlEssentials.ControlKnobs[types.ControlKnobNonReclaimedCPUSize]; ok {
+		if v.Value <= r.ResourceEssentials.ResourceLowerBound {
+			boundType = types.BoundLower
+		} else {
+			boundType = types.BoundNone
+		}
+	}
 
 	for indicatorName := range r.indicatorCurrentGetters {
 		r.regionStatus.OvershootStatus[indicatorName] = types.OvershootUnknown
@@ -555,6 +568,9 @@ func (r *QoSRegionBase) updateStatus() {
 	// fill in overshoot entry
 	for indicatorName, indicator := range r.ControlEssentials.Indicators {
 		if indicator.Current > indicator.Target {
+			if overrideBoundType == nil {
+				boundType = types.BoundUpper
+			}
 			r.regionStatus.OvershootStatus[indicatorName] = types.OvershootTrue
 		} else {
 			r.regionStatus.OvershootStatus[indicatorName] = types.OvershootFalse
@@ -562,13 +578,8 @@ func (r *QoSRegionBase) updateStatus() {
 	}
 
 	// fill in bound entry
-	if v, ok := r.ControlEssentials.ControlKnobs[types.ControlKnobNonReclaimedCPUSize]; ok {
-		if v.Value <= r.ResourceEssentials.ResourceLowerBound {
-			r.regionStatus.BoundType = types.BoundLower
-		} else {
-			r.regionStatus.BoundType = types.BoundNone
-		}
-	}
+	r.regionStatus.BoundType = boundType
+
 }
 
 func (r *QoSRegionBase) EnableReclaim() bool {

@@ -246,7 +246,6 @@ func (p *DynamicPolicy) dedicatedCoresWithNUMABindingAllocationSidecarHandler(_ 
 	p.state.SetAllocationInfo(v1.ResourceMemory, req.PodUid, req.ContainerName, allocationInfo)
 	podResourceEntries = p.state.GetPodResourceEntries()
 	resourcesState, err := state.GenerateMachineStateFromPodEntries(p.state.GetMachineInfo(), podResourceEntries, p.state.GetReservedMemory())
-
 	if err != nil {
 		general.Infof("pod: %s/%s, container: %s GenerateMachineStateFromPodEntries failed with error: %v",
 			req.PodNamespace, req.PodName, req.ContainerName, err)
@@ -429,12 +428,18 @@ func (p *DynamicPolicy) adjustAllocationEntries() error {
 	p.state.SetPodResourceEntries(podResourceEntries)
 	p.state.SetMachineState(resourcesMachineState)
 
-	// drop cache for containers whose numaset changed
+	// drop cache and migrate pages for containers whose numaset changed
 	for podUID, containers := range numaSetChangedContainers {
 		for containerName := range containers {
 			containerID, err := p.metaServer.GetContainerID(podUID, containerName)
 			if err != nil {
 				general.Errorf("get container id of pod: %s container: %s failed with error: %v", podUID, containerName, err)
+				continue
+			}
+
+			container, err := p.metaServer.GetContainerSpec(podUID, containerName)
+			if err != nil || container == nil {
+				general.Errorf("get container spec for pod: %s, container: %s failed with error: %v", podUID, containerName, err)
 				continue
 			}
 
@@ -455,13 +460,22 @@ func (p *DynamicPolicy) adjustAllocationEntries() error {
 				}
 			}
 
+			memoryLimit := container.Resources.Limits[v1.ResourceMemory]
+			memoryReq := container.Resources.Requests[v1.ResourceMemory]
+			memoryLimitBytes := memoryLimit.Value()
+			memoryReqBytes := memoryReq.Value()
+
+			if memoryLimitBytes == 0 {
+				memoryLimitBytes = memoryReqBytes
+			}
+
 			dropCacheWorkName := util.GetContainerAsyncWorkName(podUID, containerName,
 				memoryPluginAsyncWorkTopicDropCache)
 			// start a asynchronous work to drop cache for the container whose numaset changed and doesn't require numa_binding
 			err = p.asyncWorkers.AddWork(dropCacheWorkName,
 				&asyncworker.Work{
 					Fn:          cgroupmgr.DropCacheWithTimeoutForContainer,
-					Params:      []interface{}{podUID, containerID, dropCacheTimeoutSeconds},
+					Params:      []interface{}{podUID, containerID, dropCacheTimeoutSeconds, memoryLimitBytes},
 					DeliveredAt: time.Now()})
 
 			if err != nil {
@@ -518,7 +532,6 @@ func (p *DynamicPolicy) calculateMemoryAllocation(req *pluginapi.ResourceRequest
 	if leftQuantity > 0 {
 		general.Errorf("hint NUMA nodes: %s can't meet memory request: %d bytes, leftQuantity: %d bytes",
 			hintNumaNodes.String(), memoryReq, leftQuantity)
-
 		return fmt.Errorf("results can't meet memory request")
 	}
 
@@ -536,7 +549,6 @@ func calculateExclusiveMemory(req *pluginapi.ResourceRequest,
 		var curNumaNodeAllocated uint64 = 0
 
 		numaNodeState := machineState[numaNode]
-
 		if numaNodeState == nil {
 			return reqQuantity, fmt.Errorf("NUMA: %d has nil state", numaNode)
 		}
@@ -597,7 +609,6 @@ func calculateMemoryInNumaNodes(req *pluginapi.ResourceRequest,
 		var curNumaNodeAllocated uint64 = 0
 
 		numaNodeState := machineState[numaNode]
-
 		if numaNodeState == nil {
 			return reqQuantity, fmt.Errorf("NUMA: %d has nil state", numaNode)
 		}

@@ -36,6 +36,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/pointer"
 
 	"github.com/kubewharf/katalyst-api/pkg/apis/autoscaling/v1alpha1"
 	apiworkload "github.com/kubewharf/katalyst-api/pkg/apis/workload/v1alpha1"
@@ -69,8 +70,9 @@ const (
 // efficiency, we can't assume that all function callers MUST use an
 // indexed informer to look up objects.
 type SPDController struct {
-	ctx  context.Context
-	conf *controller.SPDConfig
+	ctx       context.Context
+	conf      *controller.SPDConfig
+	qosConfig *generic.QoSConfiguration
 
 	podUpdater      control.PodUpdater
 	spdControl      control.ServiceProfileControl
@@ -99,7 +101,7 @@ type SPDController struct {
 
 func NewSPDController(ctx context.Context, controlCtx *katalystbase.GenericContext,
 	genericConf *generic.GenericConfiguration, _ *controller.GenericControllerConfiguration,
-	conf *controller.SPDConfig, extraConf interface{}) (*SPDController, error) {
+	conf *controller.SPDConfig, qosConfig *generic.QoSConfiguration, extraConf interface{}) (*SPDController, error) {
 	if conf == nil || controlCtx.Client == nil || genericConf == nil {
 		return nil, fmt.Errorf("client, conf and generalConf can't be nil")
 	}
@@ -110,6 +112,7 @@ func NewSPDController(ctx context.Context, controlCtx *katalystbase.GenericConte
 	spdController := &SPDController{
 		ctx:                 ctx,
 		conf:                conf,
+		qosConfig:           qosConfig,
 		podUpdater:          &control.DummyPodUpdater{},
 		spdControl:          &control.DummySPDControl{},
 		workloadControl:     &control.DummyUnstructuredControl{},
@@ -370,7 +373,7 @@ func (sc *SPDController) syncWorkload(key string) error {
 			klog.Errorf("[spd] clear pod list annotations for workload %s/%s failed: %v", namespace, name, err)
 			return err
 		}
-		return sc.cleanWorkloadSPDAnnotation(workload, *gvr)
+		return nil
 	}
 
 	spd, err := sc.getOrCreateSPDForWorkload(workload)
@@ -383,7 +386,7 @@ func (sc *SPDController) syncWorkload(key string) error {
 		klog.Errorf("[spd] set pod list annotations for workload %s/%s failed: %v", namespace, name, err)
 		return err
 	}
-	return sc.setWorkloadSPDAnnotation(workload, *gvr, spd.Name)
+	return nil
 }
 
 func (sc *SPDController) addSPD(obj interface{}) {
@@ -464,7 +467,7 @@ func (sc *SPDController) syncSPD(key string) error {
 
 	// update baseline percentile
 	newSPD := spd.DeepCopy()
-	err = sc.updateBaselinePercentile(newSPD)
+	err = sc.updateBaselineSentinel(newSPD)
 	if err != nil {
 		return err
 	}
@@ -507,9 +510,6 @@ func (sc *SPDController) cleanSPD() {
 				needDelete = true
 
 				klog.Warningf("[spd] clear un-wanted spd annotation %v for workload %v", spd.Name, workload.GetName())
-				if err := sc.cleanWorkloadSPDAnnotation(workload, gvr); err != nil {
-					klog.Errorf("[spd] clear un-wanted spd annotation %s for workload %v error: %v", spd.Name, workload.GetName(), err)
-				}
 			}
 		}
 
@@ -542,6 +542,28 @@ func (sc *SPDController) getWorkload(gvr schema.GroupVersionResource, namespace,
 	return workload, nil
 }
 
+// defaultBaselinePercent returns default baseline ratio based on the qos level of workload,
+// and if the configured data cannot be found, we will return 1.0,
+// which signifies that the resources of this workload cannot be reclaimed to reclaimed_cores.
+func (sc *SPDController) defaultBaselinePercent(workload *unstructured.Unstructured) *int32 {
+	annotations, err := native.GetUnstructuredTemplateAnnotations(workload)
+	if err != nil {
+		general.ErrorS(err, "failed to GetUnstructuredTemplateAnnotations")
+		return pointer.Int32(100)
+	}
+	qosLevel, err := sc.qosConfig.GetQoSLevel(annotations)
+	if err != nil {
+		general.ErrorS(err, "failed to GetQoSLevel")
+		return pointer.Int32(100)
+	}
+	baselinePercent, ok := sc.conf.BaselinePercent[qosLevel]
+	if !ok {
+		general.InfoS("failed to get default baseline percent", "qosLevel", qosLevel)
+		return pointer.Int32(100)
+	}
+	return pointer.Int32(int32(baselinePercent))
+}
+
 // getOrCreateSPDForWorkload get workload's spd or create one if the spd doesn't exist
 func (sc *SPDController) getOrCreateSPDForWorkload(workload *unstructured.Unstructured) (*apiworkload.ServiceProfileDescriptor, error) {
 	gvk := workload.GroupVersionKind()
@@ -555,16 +577,26 @@ func (sc *SPDController) getOrCreateSPDForWorkload(workload *unstructured.Unstru
 	spd, err := util.GetSPDForWorkload(workload, sc.spdIndexer, sc.spdLister)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			spd := &apiworkload.ServiceProfileDescriptor{}
-			spd.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
-			spd.SetNamespace(workload.GetNamespace())
-			spd.SetName(workload.GetName())
-			spd.Spec.TargetRef = v1alpha1.CrossVersionObjectReference{
-				Name:       ownerRef.Name,
-				Kind:       ownerRef.Kind,
-				APIVersion: ownerRef.APIVersion,
+			spd := &apiworkload.ServiceProfileDescriptor{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            workload.GetName(),
+					Namespace:       workload.GetNamespace(),
+					OwnerReferences: []metav1.OwnerReference{ownerRef},
+					Labels:          workload.GetLabels(),
+				},
+				Spec: apiworkload.ServiceProfileDescriptorSpec{
+					TargetRef: v1alpha1.CrossVersionObjectReference{
+						Name:       ownerRef.Name,
+						Kind:       ownerRef.Kind,
+						APIVersion: ownerRef.APIVersion,
+					},
+					BaselinePercent: sc.defaultBaselinePercent(workload),
+				},
+				Status: apiworkload.ServiceProfileDescriptorStatus{
+					AggMetrics: []apiworkload.AggPodMetrics{},
+				},
 			}
-			spd.Status.AggMetrics = []apiworkload.AggPodMetrics{}
+			sc.updateBaselineSentinel(spd)
 
 			return sc.spdControl.CreateSPD(sc.ctx, spd, metav1.CreateOptions{})
 		}
@@ -573,51 +605,6 @@ func (sc *SPDController) getOrCreateSPDForWorkload(workload *unstructured.Unstru
 	}
 
 	return spd, nil
-}
-
-// setWorkloadSPDAnnotation add spd name in workload annotations
-func (sc *SPDController) setWorkloadSPDAnnotation(workload *unstructured.Unstructured, gvr schema.GroupVersionResource, spdName string) error {
-	if workload.GetAnnotations()[apiconsts.WorkloadAnnotationSPDNameKey] == spdName {
-		return nil
-	}
-
-	workloadCopy := workload.DeepCopy()
-	annotations := workloadCopy.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-	annotations[apiconsts.WorkloadAnnotationSPDNameKey] = spdName
-	workloadCopy.SetAnnotations(annotations)
-
-	workloadGVR := metav1.GroupVersionResource{Version: gvr.Version, Group: gvr.Group, Resource: gvr.Resource}
-	_, err := sc.workloadControl.PatchUnstructured(sc.ctx, workloadGVR, workload, workloadCopy)
-	if err != nil {
-		return err
-	}
-
-	klog.Infof("[spd] successfully set annotations for workload %v to %v", workload.GetName(), spdName)
-	return nil
-}
-
-// cleanWorkloadSPDAnnotation removes spd name in workload annotations
-func (sc *SPDController) cleanWorkloadSPDAnnotation(workload *unstructured.Unstructured, gvr schema.GroupVersionResource) error {
-	if _, ok := workload.GetAnnotations()[apiconsts.WorkloadAnnotationSPDNameKey]; !ok {
-		return nil
-	}
-
-	workloadCopy := workload.DeepCopy()
-	annotations := workloadCopy.GetAnnotations()
-	delete(annotations, apiconsts.WorkloadAnnotationSPDNameKey)
-	workloadCopy.SetAnnotations(annotations)
-
-	workloadGVR := metav1.GroupVersionResource{Version: gvr.Version, Group: gvr.Group, Resource: gvr.Resource}
-	_, err := sc.workloadControl.PatchUnstructured(sc.ctx, workloadGVR, workload, workloadCopy)
-	if err != nil {
-		return err
-	}
-
-	klog.Infof("[spd] successfully clear annotations for workload %v", workload.GetName())
-	return nil
 }
 
 func (sc *SPDController) setPodListSPDAnnotation(podList []*core.Pod, spdName string) error {
@@ -689,13 +676,13 @@ func (sc *SPDController) cleanPodListSPDAnnotation(podList []*core.Pod) error {
 
 // cleanPodSPDAnnotation removes pod name in workload annotations
 func (sc *SPDController) cleanPodSPDAnnotation(pod *core.Pod) error {
-	if _, ok := pod.GetAnnotations()[apiconsts.WorkloadAnnotationSPDNameKey]; !ok {
+	if _, ok := pod.GetAnnotations()[apiconsts.PodAnnotationSPDNameKey]; !ok {
 		return nil
 	}
 
 	podCopy := pod.DeepCopy()
 	annotations := podCopy.GetAnnotations()
-	delete(annotations, apiconsts.WorkloadAnnotationSPDNameKey)
+	delete(annotations, apiconsts.PodAnnotationSPDNameKey)
 	podCopy.SetAnnotations(annotations)
 
 	err := sc.podUpdater.PatchPod(sc.ctx, pod, podCopy)

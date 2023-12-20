@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"google.golang.org/grpc"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -36,7 +37,9 @@ import (
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/advisorsvc"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/commonstate"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/memory/dynamicpolicy/memoryadvisor"
+	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/memory/dynamicpolicy/oom"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/memory/dynamicpolicy/state"
+	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/memory/handlers/sockmem"
 	"github.com/kubewharf/katalyst-core/pkg/agent/qrm-plugins/util"
 	"github.com/kubewharf/katalyst-core/pkg/agent/utilcomponent/periodicalhandler"
 	"github.com/kubewharf/katalyst-core/pkg/config"
@@ -69,6 +72,8 @@ const (
 	setMemoryMigratePeriod     = 5 * time.Second
 	applyCgroupPeriod          = 5 * time.Second
 	setExtraControlKnobsPeriod = 5 * time.Second
+	clearOOMPriorityPeriod     = 1 * time.Hour
+	syncOOMPriorityPeriod      = 5 * time.Second
 )
 
 var (
@@ -112,8 +117,9 @@ type DynamicPolicy struct {
 	migratingMemory   map[string]map[string]bool
 	residualHitMap    map[string]int64
 
-	allocationHandlers map[string]util.AllocationHandler
-	hintHandlers       map[string]util.HintHandler
+	allocationHandlers  map[string]util.AllocationHandler
+	hintHandlers        map[string]util.HintHandler
+	enhancementHandlers util.ResourceEnhancementHandlerMap
 
 	extraStateFileAbsPath string
 	name                  string
@@ -123,9 +129,15 @@ type DynamicPolicy struct {
 	asyncWorkers *asyncworker.AsyncWorkers
 
 	enableSettingMemoryMigrate bool
+	enableSettingSockMem       bool
 	enableMemoryAdvisor        bool
 	memoryAdvisorSocketAbsPath string
 	memoryPluginSocketAbsPath  string
+
+	enableOOMPriority        bool
+	oomPriorityMapPinnedPath string
+	oomPriorityMapLock       sync.Mutex
+	oomPriorityMap           *ebpf.Map
 }
 
 func NewDynamicPolicy(agentCtx *agent.GenericContext, conf *config.Configuration,
@@ -172,15 +184,19 @@ func NewDynamicPolicy(agentCtx *agent.GenericContext, conf *config.Configuration
 		stopCh:                     make(chan struct{}),
 		migratingMemory:            make(map[string]map[string]bool),
 		residualHitMap:             make(map[string]int64),
+		enhancementHandlers:        make(util.ResourceEnhancementHandlerMap),
 		extraStateFileAbsPath:      conf.ExtraStateFileAbsPath,
 		name:                       fmt.Sprintf("%s_%s", agentName, MemoryResourcePluginPolicyNameDynamic),
 		podDebugAnnoKeys:           conf.PodDebugAnnoKeys,
-		asyncWorkers:               asyncworker.NewAsyncWorkers(memoryPluginAsyncWorkersName),
+		asyncWorkers:               asyncworker.NewAsyncWorkers(memoryPluginAsyncWorkersName, wrappedEmitter),
 		enableSettingMemoryMigrate: conf.EnableSettingMemoryMigrate,
+		enableSettingSockMem:       conf.EnableSettingSockMem,
 		enableMemoryAdvisor:        conf.EnableMemoryAdvisor,
 		memoryAdvisorSocketAbsPath: conf.MemoryAdvisorSocketAbsPath,
 		memoryPluginSocketAbsPath:  conf.MemoryPluginSocketAbsPath,
 		extraControlKnobConfigs:    extraControlKnobConfigs, // [TODO]: support modifying extraControlKnobConfigs by KCC
+		enableOOMPriority:          conf.EnableOOMPriority,
+		oomPriorityMapPinnedPath:   conf.OOMPriorityPinnedMapAbsPath,
 	}
 
 	policyImplement.allocationHandlers = map[string]util.AllocationHandler{
@@ -193,6 +209,11 @@ func NewDynamicPolicy(agentCtx *agent.GenericContext, conf *config.Configuration
 		apiconsts.PodAnnotationQoSLevelSharedCores:    policyImplement.sharedCoresHintHandler,
 		apiconsts.PodAnnotationQoSLevelDedicatedCores: policyImplement.dedicatedCoresHintHandler,
 		apiconsts.PodAnnotationQoSLevelReclaimedCores: policyImplement.reclaimedCoresHintHandler,
+	}
+
+	if policyImplement.enableOOMPriority {
+		policyImplement.enhancementHandlers.Register(apiconsts.QRMPhaseRemovePod,
+			apiconsts.PodAnnotationMemoryEnhancementOOMPriority, policyImplement.clearOOMPriority)
 	}
 
 	pluginWrapper, err := skeleton.NewRegistrationPluginWrapper(policyImplement,
@@ -245,7 +266,35 @@ func (p *DynamicPolicy) Start() (err error) {
 		go wait.Until(p.setMemoryMigrate, setMemoryMigratePeriod, p.stopCh)
 	}
 
-	periodicalhandler.ReadyToStartHandlersByGroup(qrm.QRMMemoryPluginPeriodicalHandlerGroupName)
+	if p.enableOOMPriority {
+		general.Infof("OOM priority enabled")
+		go p.PollOOMBPFInit(p.stopCh)
+
+		err := periodicalhandler.RegisterPeriodicalHandler(qrm.QRMMemoryPluginPeriodicalHandlerGroupName,
+			oom.ClearResidualOOMPriorityPeriodicalHandlerName, p.clearResidualOOMPriority, clearOOMPriorityPeriod)
+		if err != nil {
+			general.Infof("register clearResidualOOMPriority failed, err=%v", err)
+		}
+
+		err = periodicalhandler.RegisterPeriodicalHandler(qrm.QRMMemoryPluginPeriodicalHandlerGroupName,
+			oom.SyncOOMPriorityPriorityPeriodicalHandlerName, p.syncOOMPriority, syncOOMPriorityPeriod)
+		if err != nil {
+			general.Infof("register syncOOMPriority failed, err=%v", err)
+		}
+	}
+
+	if p.enableSettingSockMem {
+		general.Infof("setSockMem enabled")
+		err := periodicalhandler.RegisterPeriodicalHandler(qrm.QRMMemoryPluginPeriodicalHandlerGroupName,
+			sockmem.EnableSetSockMemPeriodicalHandlerName, sockmem.SetSockMemLimit, 60*time.Second)
+		if err != nil {
+			general.Infof("setSockMem failed, err=%v", err)
+		}
+	}
+
+	go wait.Until(func() {
+		periodicalhandler.ReadyToStartHandlersByGroup(qrm.QRMMemoryPluginPeriodicalHandlerGroupName)
+	}, 5*time.Second, p.stopCh)
 
 	if !p.enableMemoryAdvisor {
 		general.Infof("start dynamic policy memory plugin without memory advisor")
@@ -302,6 +351,7 @@ func (p *DynamicPolicy) Start() (err error) {
 func (p *DynamicPolicy) Stop() error {
 	p.Lock()
 	defer func() {
+		p.oomPriorityMap.Close()
 		p.started = false
 		p.Unlock()
 		general.Warningf("stopped")
@@ -400,6 +450,16 @@ func (p *DynamicPolicy) RemovePod(ctx context.Context,
 			_ = p.emitter.StoreInt64(util.MetricNameRemovePodFailed, 1, metrics.MetricTypeNameRaw)
 		}
 	}()
+
+	for lastLevelEnhancementKey, handler := range p.enhancementHandlers[apiconsts.QRMPhaseRemovePod] {
+		if p.hasLastLevelEnhancementKey(lastLevelEnhancementKey, req.PodUid) {
+			herr := handler(ctx, p.emitter, p.metaServer, req,
+				p.state.GetPodResourceEntries())
+			if herr != nil {
+				return &pluginapi.RemovePodResponse{}, herr
+			}
+		}
+	}
 
 	if p.enableMemoryAdvisor {
 		_, err = p.advisorClient.RemovePod(ctx, &advisorsvc.RemovePodRequest{PodUid: req.PodUid})
@@ -790,10 +850,25 @@ func (p *DynamicPolicy) getContainerRequestedMemoryBytes(allocationInfo *state.A
 		return 0
 	}
 
-	memoryQuantity := native.GetMemoryQuantity(container.Resources.Requests)
+	memoryQuantity := native.MemoryQuantityGetter()(container.Resources.Requests)
 	requestBytes := general.Max(int(memoryQuantity.Value()), 0)
 
 	general.Infof("get memory request bytes: %d for pod: %s/%s container: %s from podWatcher",
 		requestBytes, allocationInfo.PodNamespace, allocationInfo.PodName, allocationInfo.ContainerName)
 	return requestBytes
+}
+
+// hasLastLevelEnhancementKey check if the pod with the given UID has the corresponding last level enhancement key
+func (p *DynamicPolicy) hasLastLevelEnhancementKey(lastLevelEnhancementKey string, podUID string) bool {
+	podEntries := p.state.GetPodResourceEntries()[v1.ResourceMemory]
+
+	for _, allocationInfo := range podEntries[podUID] {
+		if _, ok := allocationInfo.Annotations[lastLevelEnhancementKey]; ok {
+			general.Infof("pod: %s has last level enhancement key: %s", podUID, lastLevelEnhancementKey)
+			return true
+		}
+	}
+
+	general.Infof("pod: %s does not have last level enhancement key: %s", podUID, lastLevelEnhancementKey)
+	return false
 }

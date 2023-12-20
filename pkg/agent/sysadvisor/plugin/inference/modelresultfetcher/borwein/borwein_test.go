@@ -120,6 +120,7 @@ func TestNativeGetNodeFeatureValue(t *testing.T) {
 			wantErr: true,
 		},
 	}
+	nowTimestamp := time.Now().Unix()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			clientSet := generateTestGenericClientSet([]runtime.Object{&v1.Node{
@@ -129,7 +130,7 @@ func TestNativeGetNodeFeatureValue(t *testing.T) {
 			}}, nil)
 			metaServer := generateTestMetaServer(clientSet)
 			metaServer.NodeFetcher = node.NewRemoteNodeFetcher(nodeName, clientSet.KubeClient.CoreV1().Nodes())
-			got, err := nativeGetNodeFeatureValue(tt.args.featureName, metaServer, nil)
+			got, err := nativeGetNodeFeatureValue(nowTimestamp, tt.args.featureName, metaServer, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NativeGetNodeFeatureValue() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -187,10 +188,10 @@ func TestNativeGetContainerFeatureValue(t *testing.T) {
 			wantErr: true,
 		},
 	}
+	nowTimestamp := time.Now().Unix()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-
-			got, err := nativeGetContainerFeatureValue(tt.args.podUID, tt.args.containerName,
+			got, err := nativeGetContainerFeatureValue(nowTimestamp, tt.args.podUID, tt.args.containerName,
 				tt.args.featureName, metaServer,
 				&metacache.MetaCacheImp{MetricsReader: metaServer.MetricsFetcher})
 			if (err != nil) != tt.wantErr {
@@ -264,9 +265,13 @@ func TestBorweinModelResultFetcher_FetchModelResult(t *testing.T) {
 	infSvcClient.SetFakeResp(&borweininfsvc.InferenceResponse{
 		PodResponseEntries: map[string]*borweininfsvc.ContainerResponseEntries{
 			podUID: {
-				ContainerInferenceResults: map[string]*borweininfsvc.InferenceResult{
+				ContainerInferenceResults: map[string]*borweininfsvc.InferenceResults{
 					containerName: {
-						IsDefault: true,
+						InferenceResults: []*borweininfsvc.InferenceResult{
+							{
+								IsDefault: true,
+							},
+						},
 					},
 				},
 			},
@@ -319,6 +324,7 @@ func TestBorweinModelResultFetcher_FetchModelResult(t *testing.T) {
 				nodeFeatureNames:      tt.fields.nodeFeatureNames,
 				containerFeatureNames: tt.fields.containerFeatureNames,
 				infSvcClient:          tt.fields.infSvcClient,
+				emitter:               metrics.DummyMetrics{},
 			}
 			if err := bmrf.FetchModelResult(tt.args.ctx, tt.args.metaReader, tt.args.metaWriter, tt.args.metaServer); (err != nil) != tt.wantErr {
 				t.Errorf("BorweinModelResultFetcher.FetchModelResult() error = %v, wantErr %v", err, tt.wantErr)
@@ -395,9 +401,13 @@ func TestBorweinModelResultFetcher_parseInferenceRespForPods(t *testing.T) {
 	infSvcClient.SetFakeResp(&borweininfsvc.InferenceResponse{
 		PodResponseEntries: map[string]*borweininfsvc.ContainerResponseEntries{
 			podUID: {
-				ContainerInferenceResults: map[string]*borweininfsvc.InferenceResult{
+				ContainerInferenceResults: map[string]*borweininfsvc.InferenceResults{
 					containerName: {
-						IsDefault: true,
+						InferenceResults: []*borweininfsvc.InferenceResult{
+							{
+								IsDefault: true,
+							},
+						},
 					},
 				},
 			},
@@ -436,9 +446,13 @@ func TestBorweinModelResultFetcher_parseInferenceRespForPods(t *testing.T) {
 				resp: &borweininfsvc.InferenceResponse{
 					PodResponseEntries: map[string]*borweininfsvc.ContainerResponseEntries{
 						podUID: {
-							ContainerInferenceResults: map[string]*borweininfsvc.InferenceResult{
+							ContainerInferenceResults: map[string]*borweininfsvc.InferenceResults{
 								containerName: {
-									IsDefault: true,
+									InferenceResults: []*borweininfsvc.InferenceResult{
+										{
+											IsDefault: true,
+										},
+									},
 								},
 							},
 						},
@@ -446,9 +460,11 @@ func TestBorweinModelResultFetcher_parseInferenceRespForPods(t *testing.T) {
 				},
 			},
 			want: borweintypes.BorweinInferenceResults{
-				podUID: map[string]*borweininfsvc.InferenceResult{
+				podUID: map[string][]*borweininfsvc.InferenceResult{
 					containerName: {
-						IsDefault: true,
+						{
+							IsDefault: true,
+						},
 					},
 				},
 			},
@@ -462,6 +478,7 @@ func TestBorweinModelResultFetcher_parseInferenceRespForPods(t *testing.T) {
 				nodeFeatureNames:      tt.fields.nodeFeatureNames,
 				containerFeatureNames: tt.fields.containerFeatureNames,
 				infSvcClient:          tt.fields.infSvcClient,
+				emitter:               metrics.DummyMetrics{},
 			}
 			got, err := bmrf.parseInferenceRespForPods(tt.args.containers, tt.args.resp)
 			if (err != nil) != tt.wantErr {
@@ -543,9 +560,13 @@ func TestBorweinModelResultFetcher_getInferenceRequestForPods(t *testing.T) {
 	infSvcClient.SetFakeResp(&borweininfsvc.InferenceResponse{
 		PodResponseEntries: map[string]*borweininfsvc.ContainerResponseEntries{
 			podUID: {
-				ContainerInferenceResults: map[string]*borweininfsvc.InferenceResult{
+				ContainerInferenceResults: map[string]*borweininfsvc.InferenceResults{
 					containerName: {
-						IsDefault: true,
+						InferenceResults: []*borweininfsvc.InferenceResult{
+							{
+								IsDefault: true,
+							},
+						},
 					},
 				},
 			},
@@ -609,6 +630,7 @@ func TestBorweinModelResultFetcher_getInferenceRequestForPods(t *testing.T) {
 				nodeFeatureNames:      tt.fields.nodeFeatureNames,
 				containerFeatureNames: tt.fields.containerFeatureNames,
 				infSvcClient:          tt.fields.infSvcClient,
+				emitter:               metrics.DummyMetrics{},
 			}
 			got, err := bmrf.getInferenceRequestForPods(tt.args.containers, tt.args.metaReader, tt.args.metaWriter, tt.args.metaServer)
 			if (err != nil) != tt.wantErr {
@@ -686,9 +708,13 @@ func TestNewBorweinModelResultFetcher(t *testing.T) {
 	infSvcClient.SetFakeResp(&borweininfsvc.InferenceResponse{
 		PodResponseEntries: map[string]*borweininfsvc.ContainerResponseEntries{
 			podUID: {
-				ContainerInferenceResults: map[string]*borweininfsvc.InferenceResult{
+				ContainerInferenceResults: map[string]*borweininfsvc.InferenceResults{
 					containerName: {
-						IsDefault: true,
+						InferenceResults: []*borweininfsvc.InferenceResult{
+							{
+								IsDefault: true,
+							},
+						},
 					},
 				},
 			},
@@ -696,14 +722,14 @@ func TestNewBorweinModelResultFetcher(t *testing.T) {
 	})
 
 	type args struct {
-		fetcherName                   string
-		enableBorwein                 bool
-		conf                          *config.Configuration
-		extraConf                     interface{}
-		emitterPool                   metricspool.MetricsEmitterPool
-		metaServer                    *metaserver.MetaServer
-		metaCache                     metacache.MetaCache
-		inferenceServiceSocketAbsPath string
+		fetcherName                     string
+		enableBorweinModelResultFetcher bool
+		conf                            *config.Configuration
+		extraConf                       interface{}
+		emitterPool                     metricspool.MetricsEmitterPool
+		metaServer                      *metaserver.MetaServer
+		metaCache                       metacache.MetaCache
+		inferenceServiceSocketAbsPath   string
 	}
 	tests := []struct {
 		name    string
@@ -714,64 +740,64 @@ func TestNewBorweinModelResultFetcher(t *testing.T) {
 		{
 			name: "test normal new borwein model result fetcher",
 			args: args{
-				fetcherName:                   BorweinModelResultFetcherName,
-				enableBorwein:                 true,
-				conf:                          conf,
-				emitterPool:                   metricspool.DummyMetricsEmitterPool{},
-				metaServer:                    metaServer,
-				metaCache:                     mc,
-				inferenceServiceSocketAbsPath: path.Join(sockDir, "test.sock"),
+				fetcherName:                     BorweinModelResultFetcherName,
+				enableBorweinModelResultFetcher: true,
+				conf:                            conf,
+				emitterPool:                     metricspool.DummyMetricsEmitterPool{},
+				metaServer:                      metaServer,
+				metaCache:                       mc,
+				inferenceServiceSocketAbsPath:   path.Join(sockDir, "test.sock"),
 			},
 			wantErr: false,
 		},
 		{
 			name: "test new borwein with nil conf",
 			args: args{
-				fetcherName:   BorweinModelResultFetcherName,
-				enableBorwein: true,
-				conf:          nil,
-				emitterPool:   metricspool.DummyMetricsEmitterPool{},
-				metaServer:    metaServer,
-				metaCache:     mc,
+				fetcherName:                     BorweinModelResultFetcherName,
+				enableBorweinModelResultFetcher: true,
+				conf:                            nil,
+				emitterPool:                     metricspool.DummyMetricsEmitterPool{},
+				metaServer:                      metaServer,
+				metaCache:                       mc,
 			},
 			wantErr: true,
 		},
 		{
 			name: "test new borwein with nil metaServer",
 			args: args{
-				fetcherName:                   BorweinModelResultFetcherName,
-				enableBorwein:                 true,
-				conf:                          conf,
-				emitterPool:                   metricspool.DummyMetricsEmitterPool{},
-				metaServer:                    nil,
-				metaCache:                     mc,
-				inferenceServiceSocketAbsPath: path.Join(sockDir, "test.sock"),
+				fetcherName:                     BorweinModelResultFetcherName,
+				enableBorweinModelResultFetcher: true,
+				conf:                            conf,
+				emitterPool:                     metricspool.DummyMetricsEmitterPool{},
+				metaServer:                      nil,
+				metaCache:                       mc,
+				inferenceServiceSocketAbsPath:   path.Join(sockDir, "test.sock"),
 			},
 			wantErr: true,
 		},
 		{
 			name: "test new borwein with nil metacache",
 			args: args{
-				fetcherName:                   BorweinModelResultFetcherName,
-				enableBorwein:                 true,
-				conf:                          conf,
-				emitterPool:                   metricspool.DummyMetricsEmitterPool{},
-				metaServer:                    metaServer,
-				metaCache:                     nil,
-				inferenceServiceSocketAbsPath: path.Join(sockDir, "test.sock"),
+				fetcherName:                     BorweinModelResultFetcherName,
+				enableBorweinModelResultFetcher: true,
+				conf:                            conf,
+				emitterPool:                     metricspool.DummyMetricsEmitterPool{},
+				metaServer:                      metaServer,
+				metaCache:                       nil,
+				inferenceServiceSocketAbsPath:   path.Join(sockDir, "test.sock"),
 			},
 			wantErr: true,
 		},
 		{
-			name: "test new borwein fetcher with enableBorwein false",
+			name: "test new borwein fetcher with enableBorweinModelResultFetcher false",
 			args: args{
-				fetcherName:                   BorweinModelResultFetcherName,
-				enableBorwein:                 false,
-				conf:                          conf,
-				emitterPool:                   metricspool.DummyMetricsEmitterPool{},
-				metaServer:                    metaServer,
-				metaCache:                     nil,
-				inferenceServiceSocketAbsPath: path.Join(sockDir, "test.sock"),
+				fetcherName:                     BorweinModelResultFetcherName,
+				enableBorweinModelResultFetcher: false,
+				conf:                            conf,
+				emitterPool:                     metricspool.DummyMetricsEmitterPool{},
+				metaServer:                      metaServer,
+				metaCache:                       nil,
+				inferenceServiceSocketAbsPath:   path.Join(sockDir, "test.sock"),
 			},
 			wantErr: false,
 		},
@@ -779,7 +805,7 @@ func TestNewBorweinModelResultFetcher(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.args.conf != nil {
-				tt.args.conf.PolicyRama.EnableBorwein = tt.args.enableBorwein
+				tt.args.conf.PolicyRama.EnableBorweinModelResultFetcher = tt.args.enableBorweinModelResultFetcher
 			}
 
 			var svr *grpc.Server
@@ -796,7 +822,7 @@ func TestNewBorweinModelResultFetcher(t *testing.T) {
 					svr.Stop()
 				}
 				return
-			} else if !tt.args.enableBorwein {
+			} else if !tt.args.enableBorweinModelResultFetcher {
 				require.Nil(t, fetcher)
 				if svr != nil {
 					svr.Stop()

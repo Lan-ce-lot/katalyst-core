@@ -28,8 +28,12 @@ type SPDConfig struct {
 	SPDPodLabelIndexerKeys []string
 
 	IndicatorPlugins []string
+
+	BaselinePercent map[string]int64
 }
 
 func NewSPDConfig() *SPDConfig {
-	return &SPDConfig{}
+	return &SPDConfig{
+		BaselinePercent: map[string]int64{},
+	}
 }

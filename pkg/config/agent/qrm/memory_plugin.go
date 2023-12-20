@@ -29,6 +29,22 @@ type MemoryQRMPluginConfig struct {
 	EnableMemoryAdvisor bool
 	// ExtraControlKnobConfigFile: the absolute path of extra control knob config file
 	ExtraControlKnobConfigFile string
+	// EnableOOMPriority: enable oom priority enhancement
+	EnableOOMPriority bool
+	// OOMPriorityPinnedMapAbsPath: the absolute path of oom priority pinned bpf map
+	OOMPriorityPinnedMapAbsPath string
+
+	// SockMemQRMPluginConfig: the configuration for sockmem limitation in cgroup and host level
+	SockMemQRMPluginConfig
+}
+
+type SockMemQRMPluginConfig struct {
+	// EnableSettingSockMemLimit is used to limit tcpmem usage in cgroup and host level
+	EnableSettingSockMem bool
+	// SetGlobalTCPMemRatio limits host max global tcp memory usage.
+	SetGlobalTCPMemRatio int
+	// SetCgroupTCPMemRatio limit cgroup max tcp memory usage.
+	SetCgroupTCPMemRatio int
 }
 
 func NewMemoryQRMPluginConfig() *MemoryQRMPluginConfig {

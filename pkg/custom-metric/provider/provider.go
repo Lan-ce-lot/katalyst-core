@@ -118,9 +118,9 @@ func (m *MetricProviderImp) GetMetricByName(ctx context.Context, namespacedName 
 		}
 
 		if res == nil {
-			res = findMetricValueLatest(metric.GetName(), PackMetricValueList(metric))
+			res = findMetricValueLatest(metric.GetName(), PackMetricValueList(metric, metricSelector))
 		} else {
-			res = findMetricValueLatest(metric.GetName(), append(PackMetricValueList(metric), *res))
+			res = findMetricValueLatest(metric.GetName(), append(PackMetricValueList(metric, metricSelector), *res))
 		}
 	}
 
@@ -163,7 +163,7 @@ func (m *MetricProviderImp) GetMetricBySelector(ctx context.Context, namespace s
 
 		m.emitCustomMetricLatencyByRawMetrics(metric)
 		resultCount += metric.Len()
-		items = append(items, PackMetricValueList(metric)...)
+		items = append(items, PackMetricValueList(metric, metricSelector)...)
 	}
 
 	return &custom_metrics.MetricValueList{
@@ -296,7 +296,6 @@ func (m *MetricProviderImp) emitCustomMetricLatencyByRawMetrics(metric types.Met
 		metric.GetObjectName(), metric.GetObjectKind(), latestItem.GetTimestamp(), time.UnixMilli(latestItem.GetTimestamp()), dataLatency)
 	tags := []metrics.MetricTag{
 		{Key: "metric_name", Val: metric.GetName()},
-		{Key: "object_name", Val: metric.GetObjectName()},
 		{Key: "object_kind", Val: metric.GetObjectKind()},
 	}
 
@@ -309,7 +308,6 @@ func (m *MetricProviderImp) emitCustomMetricLatency(metric *custom_metrics.Metri
 		metric.Metric.Name, metric.GetObjectKind(), metric.Timestamp.UnixMilli(), metric.Timestamp.Time, dataLatency)
 	tags := []metrics.MetricTag{
 		{Key: "metric_name", Val: metric.Metric.Name},
-		{Key: "object_name", Val: metric.DescribedObject.Name},
 		{Key: "object_kind", Val: metric.DescribedObject.Kind},
 	}
 
